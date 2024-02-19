@@ -17,18 +17,29 @@ table_center_y = -0.122 # -0.108 # -0.12
 table_center_z = 0.76
 
 class DataStorer():
-    def __init__(self, file_paths, images, poses=None):
+    def __init__(self, file_paths, images, poses=None, scenes_path=None):
         self.file_paths=file_paths
         self.images=images
         self.poses=poses
+        self.scenes_path=scenes_path
         
-    def save_data(self):
-        try:
-            for idx in range(len(self.file_paths)):
-                print(f"{self.file_paths[idx]=}")
-                cv2.imwrite(self.file_paths[idx], self.images[idx])
-        except:
-            print(f"AAAAAAAAAAAAHHHHHHH")
+    def save_data(self, idx=None, idxs=None):
+        if idx is not None:
+            color_bgr = self.images[idx].copy()
+            color_bgr[..., :3] = color_bgr[..., :3][..., ::-1]
+            cv2.imwrite(self.file_paths[idx], color_bgr)
+        elif idxs is not None:
+            for curr_idx in idxs:
+                color_bgr = self.images[curr_idx-1].copy()
+                color_bgr[..., :3] = color_bgr[..., :3][..., ::-1]
+                cv2.imwrite(self.file_paths[curr_idx-1], color_bgr)
+            np.save(osp.join(self.scenes_path, 'poses_groundtruth_time.npy'), self.poses)
+            del self.file_paths
+            del self.images
+            del self.poses
+
+def get_geometry_name():
+    return f'h_{h_cone}_theta_{theta_cone}_rmax_{rmax}'
 
 def get_dataset_paths(from_harddive):
     if from_harddive:
@@ -38,14 +49,14 @@ def get_dataset_paths(from_harddive):
         local_servoing_path = os.path.join(os.getcwd(), 'src/visual_servoing')
         groundtruth_path = os.path.join(local_servoing_path, 'groundtruth')
         scenes_path = os.path.join(servoing_path, 'scenes')
-        geometry_path = os.path.join(scenes_path, f'h_{h_cone}_theta_{theta_cone}_rmax_{rmax}')
-        blender_scene_path = os.path.join(scenes_path, 'dataset_blender')
+        geometry_name = get_geometry_name()
+        geometry_path = os.path.join(scenes_path, geometry_name)
+        blender_name = 'dataset_blender'
         parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path)]
-    return parameter_scenes_paths, blender_scene_path
+    return parameter_scenes_paths, geometry_name, blender_name
 
 def load_camera_info():
     path = get_camera_groundtruth().replace('groundtruth', 'camera_data')
-    print(f"{path=}")
     # Read camera_info
     camera_info = None
     with open(os.path.join(path, 'camera_info'), 'rb') as file:
@@ -61,6 +72,21 @@ def get_camera_groundtruth():
     vs_path = os.path.join(parent_path, 'visual_servoing')
     groundtruth_path = os.path.join(vs_path, "groundtruth")
     return groundtruth_path
+
+def get_splitted_pose_lines(file_path):
+    splitted_lines = None
+    with open(file_path) as file:
+        lines = file.read()
+        splitted_lines = lines.split('\n')
+    return splitted_lines
+
+def get_target_pose(suffix='target'):
+    cam_gt_path = get_camera_groundtruth()
+    geometry_name = get_geometry_name()
+    poses_path = osp.join(cam_gt_path, geometry_name)
+    target_file = osp.join(poses_path, 'poses_' + suffix + '.txt')
+    target_splitted = get_splitted_pose_lines(target_file)
+    return target_splitted
 
 def get_base_to_optical(splitted_lines):
     bo = splitted_lines.split(',')
@@ -84,12 +110,24 @@ def transform_pose(pose):
     transformation_matrix_base_to_camera = get_transform_matrix()
     return np.dot(pose, transformation_matrix_base_to_camera)
 
+def remove_cam_keyframes(frame:int):
+    action = cam_obj.animation_data.action
+    if action is None:
+        return
+    for fc in action.fcurves:
+        print(f"{frame=}")
+        cam_obj.keyframe_delete(data_path=fc.data_path, frame=frame)
+
+remove_keyframes_vec = np.vectorize(remove_cam_keyframes)
+
 parser = argparse.ArgumentParser()
 parser.add_argument('bop_parent_path', help="Path to the bop datasets parent directory")
 parser.add_argument('cc_textures_path', default="resources/cctextures", help="Path to downloaded cc textures")
 parser.add_argument('output_dir', help="Path to where the final files will be saved ")
 parser.add_argument('--num_scenes', type=int, default=2, help="How many scenes with 25 images each to generate")
 parser.add_argument('--ycbv_only', type=bool, default=True, help="Choose if only use ycbv models")
+parser.add_argument('--fx', type=float, default=600, help='Focal length in x direction')
+parser.add_argument('--fy', type=float, default=600, help='Focal length in y direction')
 args = parser.parse_args()
 
 bproc.init()
@@ -144,20 +182,35 @@ def sample_pose_func(obj: bproc.types.MeshObject):
     obj.set_rotation_euler(bproc.sampler.uniformSO3())
     
 # activate depth rendering without antialiasing and set amount of samples for color rendering
-bproc.renderer.enable_depth_output(activate_antialiasing=False)
+# bproc.renderer.enable_depth_output(activate_antialiasing=False)
 bproc.renderer.set_max_amount_of_samples(50)
 
-all_parameter_scenes_paths, blender_paths = get_dataset_paths(from_harddive=True)
+# Intrinsics from realsense plugin for gazebo
+# K = np.array([[462.1379699707031, 0.0, 320.0],
+#               [0.0, 462.1379699707031, 240.0],
+#               [0.0, 0.0, 1.0]])
+K = np.array([[args.fx, 0, 320],[0, args.fy, 240],[0, 0, 1]])
+bproc.camera.set_intrinsics_from_K_matrix(K, 640, 480)
 
+all_parameter_scenes_paths, geometry_name, blender_name = get_dataset_paths(from_harddive=True)
+# print(f"{bproc.camera.get_intrinsics_as_K_matrix()=}")
 
+target_poses = get_target_pose('target')
+target_poses_reversed = get_target_pose('target_reversed')
+
+def add_cam_pose_by_line(line, cam_poses):
+    current_pose = np.fromstring(line, dtype=np.float32, sep=',')[1:]
+    location = current_pose[:3]# - np.array([table_center_x, table_center_y, table_center_z])
+    rotation_matrix = R.from_quat(current_pose[3:]).as_matrix()
+    cam2world_matrix = bproc.math.build_transformation_mat(location, rotation_matrix)
+    cam2world_opcv = transform_pose(cam2world_matrix)
+    cam2world_blender = bproc.math.change_source_coordinate_frame_of_transformation_matrix(cam2world_opcv.copy(), ["X", "-Y", "-Z"])
+    return cam2world_opcv.flatten(), cam2world_blender
+
+sp_pt = 20
+traj_forwards = 0
+traj_backwards = 0
 for i in range(args.num_scenes):
-
-    if i==1:
-        K = np.array([[462.1379699707031, 0.0, 320.0],
-                      [0.0, 462.1379699707031, 240.0],
-                      [0.0, 0.0, 1.0]])
-        bproc.camera.set_intrinsics_from_K_matrix(K, 640, 480)
-
     # Sample bop objects for a scene
     num_ycbv_objs = np.random.randint(low=1, high=21, size=1, dtype=int)[0]
     print(f"{num_ycbv_objs=}")
@@ -191,12 +244,6 @@ for i in range(args.num_scenes):
                             elevation_min = 5, elevation_max = 89)
     light_point.set_location(location)
 
-    # sample CC Texture and assign to room planes
-    random_cc_texture = np.random.choice(cc_textures)
-    for plane in room_planes:
-        plane.replace_materials(random_cc_texture)
-
-
     # Sample object poses and check collisions 
     bproc.object.sample_poses(objects_to_sample = sampled_bop,
                               sample_pose_func = sample_pose_func, 
@@ -212,63 +259,65 @@ for i in range(args.num_scenes):
     # BVH tree used for camera obstacle checks
     bop_bvh_tree = bproc.object.create_bvh_tree_multi_objects(sampled_bop)
 
-    cam_poses = 0
-    k = 0
     for parameter_scenes_paths in all_parameter_scenes_paths:
-        num_trajectories = 2
-        for num_traj in range(1, num_trajectories+1):
-            if num_traj % 2 == 0:
-                scene_path = os.path.join(parameter_scenes_paths, f'scene_{num_traj}')
-                file_path = os.path.join(scene_path, 'poses_groundtruth_time.txt')
-                with open(file_path) as file:
-                    lines = file.read()
-                    splitted_lines = lines.split('\n')
-                    stored_rgb_files = []
-                    for j, line in enumerate(splitted_lines, 1):
-                        if j==5:
-                            break
-                        if line.strip():
-                            current_pose = np.fromstring(line, dtype=np.float32, sep=',')[1:]
-                            location = current_pose[:3]# - np.array([table_center_x, table_center_y, table_center_z])
-                            rotation_matrix = R.from_quat(current_pose[3:]).as_matrix()
-                            cam2world_matrix = bproc.math.build_transformation_mat(location, rotation_matrix)
-                            cam2world_matrix = transform_pose(cam2world_matrix)
-                            cam2world_matrix = bproc.math.change_source_coordinate_frame_of_transformation_matrix(cam2world_matrix, ["X", "-Y", "-Z"])
-                            bproc.camera.add_camera_pose(cam2world_matrix, frame=cam_poses)
-                            cam_poses += 1
-                            if j==1:
-                                chunk_path = osp.join(osp.join(os.getcwd(), args.output_dir), f'rgb_{k}')
-                                if not os.path.exists(chunk_path):
-                                    os.makedirs(chunk_path)
-                            stored_rgb_files.append(os.path.join(chunk_path, f'{j:05d}.png'))
-                    # render the whole pipeline
-                    idxs = np.arange(1, j, 1)
-                    data = bproc.renderer.render()
-                    data_storer = DataStorer(stored_rgb_files, data['colors'])
-                    data_storer.save_data()
-                    
-                    
-        k += 1     
+        random_values = np.random.choice(np.arange(1, sp_pt+1), size=10, replace=False)
+        random_values = np.hstack([random_values, np.random.choice(np.arange(sp_pt+1, 2*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(2*sp_pt+1, 3*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(3*sp_pt+1, 4*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(4*sp_pt+1, 5*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(5*sp_pt+1, 6*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(6*sp_pt+1, 7*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(7*sp_pt+1, 8*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(8*sp_pt+1, 9*sp_pt+1), size=10, replace=False)])
+        random_values = np.hstack([random_values, np.random.choice(np.arange(9*sp_pt+1, 10*sp_pt+1), size=10, replace=False)])
+        for num_traj in list(random_values):
+            # sample CC Texture and assign to room planes
+            random_cc_texture = np.random.choice(cc_textures)
+            for plane in room_planes:
+                plane.replace_materials(random_cc_texture)
+            cam_poses = 0
+            stored_rgb_files = []
+            poses_array = np.zeros((0, 16))
+            scene_path = os.path.join(parameter_scenes_paths, f'scene_{num_traj}')
+            file_path = os.path.join(scene_path, 'poses_groundtruth_time.txt')
+            if '_reversed' in parameter_scenes_paths:
+                t_poses = target_poses_reversed
+                traj_backwards += 1
+                scene_string = f'scene_{traj_backwards}'
+            else:
+                t_poses = target_poses
+                traj_forwards += 1
+                scene_string = f'scene_{traj_forwards}'
+            blender_scenes_path = scene_path.replace(geometry_name, blender_name).replace(f'scene_{num_traj}', scene_string)
+            chunk_path = osp.join(blender_scenes_path, 'rgb')
+            if not osp.exists(chunk_path):
+                os.makedirs(chunk_path)
+            # new_scenes_path = osp.join(osp.join(os.getcwd(), args.output_dir), f'scene_{k}')
+            stored_rgb_files.append(osp.join(blender_scenes_path, 'target.png'))
+            # 0th Etry is target
+            cam2world_opcv, c2w_blender = add_cam_pose_by_line(t_poses[num_traj], cam_poses)
+            bproc.camera.add_camera_pose(c2w_blender, frame=cam_poses)
+            cam_poses += 1
+            poses_array = np.vstack([poses_array, cam2world_opcv])
+            if not osp.exists(blender_scenes_path):
+                os.makedirs(blender_scenes_path)
+            with open(file_path) as file:
+                lines = file.read()
+                splitted_lines = lines.split('\n')
+                for j, line in enumerate(splitted_lines, 1):
+                    if line.strip():
+                        cam2world_opcv, c2w_blender = add_cam_pose_by_line(line, cam_poses)
+                        bproc.camera.add_camera_pose(c2w_blender, frame=cam_poses)
+                        cam_poses += 1
+                        poses_array = np.vstack([poses_array, cam2world_opcv])
+                        stored_rgb_files.append(os.path.join(chunk_path, f'{j:05d}.png'))
+                # render the whole pipeline
+                
+                data = bproc.renderer.render()
+                data_storer = DataStorer(stored_rgb_files, data['colors'], poses_array, blender_scenes_path)
+                idxs = np.arange(1, j+1, 1)
+                data_storer.save_data(idxs=idxs)
     
     for obj in (sampled_bop):      
         obj.disable_rigidbody()
         obj.hide(True)
-    
-    # render the whole pipeline
-    # data = bproc.renderer.render()
-    # bproc.image.save_images(os.path.join(args.output_dir), data['images']['RGB'])
-    """
-    # Write data in bop format
-    bproc.writer.write_bop(os.path.join(args.output_dir, 'bop_data'),
-                           target_objects = sampled_target_bop_objs,
-                           dataset = 'ycbv',
-                           depth_scale = 0.1,
-                           depths = data["depth"],
-                           colors = data["colors"], 
-                           color_file_format = "JPEG",
-                           ignore_dist_thres = 10)
-    
-    for obj in (sampled_bop):      
-        obj.disable_rigidbody()
-        obj.hide(True)
-    """
