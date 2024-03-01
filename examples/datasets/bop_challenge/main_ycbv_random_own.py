@@ -322,7 +322,7 @@ for i in range(args.num_scenes):
             # new_scenes_path = osp.join(osp.join(os.getcwd(), args.output_dir), f'scene_{k}')
             stored_rgb_files.append(osp.join(blender_scenes_path, 'target.png'))
             # 0th Etry is target
-            cam2world_opcv, c2w_blender = add_cam_pose_by_line(t_poses[num_traj], cam_poses)
+            cam2world_opcv, c2w_blender = add_cam_pose_by_line(t_poses[num_traj-1], cam_poses)
             bproc.camera.add_camera_pose(c2w_blender, frame=cam_poses)
             cam_poses += 1
             poses_array = np.vstack([poses_array, cam2world_opcv])
