@@ -128,6 +128,12 @@ parser.add_argument('--num_scenes', type=int, default=2, help="How many scenes w
 parser.add_argument('--ycbv_only', type=bool, default=True, help="Choose if only use ycbv models")
 parser.add_argument('--fx', type=float, default=600, help='Focal length in x direction')
 parser.add_argument('--fy', type=float, default=600, help='Focal length in y direction')
+parser.add_argument('--start_id_fw', type=int, default=1020, help='Start id for scene in forward direction')
+parser.add_argument('--end_id_fw', type=int, default=1600, help='End id for scene in forward direction')
+parser.add_argument('--start_id_bw', type=int, default=1000, help='Start id for scene in backward direction')
+parser.add_argument('--end_id_bw', type=int, default=1600, help='End id for scene in backward direction')
+parser.add_argument('--num_min_objs', type=int, default=3, help='Min Number of objects to be thrown into image')
+parser.add_argument('--num_max_objs', type=int, default=8, help='Max Number of objects to be thrown into image')
 args = parser.parse_args()
 
 bproc.init()
@@ -208,11 +214,13 @@ def add_cam_pose_by_line(line, cam_poses):
     return cam2world_opcv.flatten(), cam2world_blender
 
 sp_pt = 20
-traj_forwards = 0
-traj_backwards = 0
+traj_forwards = args.start_id_fw
+traj_backwards = args.start_id_bw
 for i in range(args.num_scenes):
+    if traj_forwards >= args.end_id_fw and traj_backwards >= args.end_id_bw:
+        break
     # Sample bop objects for a scene
-    num_ycbv_objs = np.random.randint(low=1, high=21, size=1, dtype=int)[0]
+    num_ycbv_objs = np.random.randint(low=1, high=args.num_max_objs, size=1, dtype=int)[0]
     print(f"{num_ycbv_objs=}")
     sampled_target_bop_objs = list(np.random.choice(target_bop_objs, size=num_ycbv_objs, replace=False))
     sampled_bop = sampled_target_bop_objs
@@ -234,15 +242,6 @@ for i in range(args.num_scenes):
         mat.set_principled_shader_value("Specular", np.random.uniform(0, 1.0))
         obj.enable_rigidbody(True, mass=1.0, friction = 100.0, linear_damping = 0.99, angular_damping = 0.99)
         obj.hide(False)
-    
-    # Sample two light sources
-    light_plane_material.make_emissive(emission_strength=np.random.uniform(3,6), 
-                                    emission_color=np.random.uniform([0.5, 0.5, 0.5, 1.0], [1.0, 1.0, 1.0, 1.0]))  
-    light_plane.replace_materials(light_plane_material)
-    light_point.set_color(np.random.uniform([0.5,0.5,0.5],[1,1,1]))
-    location = bproc.sampler.shell(center = [tx, ty, tz], radius_min = 1, radius_max = 1.5,
-                            elevation_min = 5, elevation_max = 89)
-    light_point.set_location(location)
 
     # Sample object poses and check collisions 
     bproc.object.sample_poses(objects_to_sample = sampled_bop,
@@ -260,17 +259,32 @@ for i in range(args.num_scenes):
     bop_bvh_tree = bproc.object.create_bvh_tree_multi_objects(sampled_bop)
 
     for parameter_scenes_paths in all_parameter_scenes_paths:
-        random_values = np.random.choice(np.arange(1, sp_pt+1), size=10, replace=False)
-        random_values = np.hstack([random_values, np.random.choice(np.arange(sp_pt+1, 2*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(2*sp_pt+1, 3*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(3*sp_pt+1, 4*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(4*sp_pt+1, 5*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(5*sp_pt+1, 6*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(6*sp_pt+1, 7*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(7*sp_pt+1, 8*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(8*sp_pt+1, 9*sp_pt+1), size=10, replace=False)])
-        random_values = np.hstack([random_values, np.random.choice(np.arange(9*sp_pt+1, 10*sp_pt+1), size=10, replace=False)])
+        if not '_reversed' in parameter_scenes_paths and traj_forwards%100==0 and traj_backwards<traj_forwards:
+            continue
+        if '_reversed' in parameter_scenes_paths:
+            traj_count = (2*traj_backwards)%200+1
+        else:
+            traj_count = (2*traj_forwards)%200+1
+        random_values = np.zeros((0,), dtype=int)
+        for j in range(10):
+            end_val = (j+1)*sp_pt+1
+            choice_size=10
+            if  end_val > traj_count:
+                start_val = j*sp_pt+1
+                if j*sp_pt+1 < traj_count:
+                    start_val = traj_count
+                    choice_size = int((end_val - start_val)/2)    
+                print(f"{j}_{choice_size=}")
+                random_values = np.hstack([random_values, np.random.choice(np.arange(start_val, end_val), size=choice_size, replace=False)])
         for num_traj in list(random_values):
+            # Sample two light sources
+            light_plane_material.make_emissive(emission_strength=np.random.uniform(3,6), 
+                                            emission_color=np.random.uniform([0.5, 0.5, 0.5, 1.0], [1.0, 1.0, 1.0, 1.0]))  
+            light_plane.replace_materials(light_plane_material)
+            light_point.set_color(np.random.uniform([0.5,0.5,0.5],[1,1,1]))
+            location = bproc.sampler.shell(center = [tx, ty, tz], radius_min = 1, radius_max = 1.5,
+                                    elevation_min = 5, elevation_max = 89)
+            light_point.set_location(location)
             # sample CC Texture and assign to room planes
             random_cc_texture = np.random.choice(cc_textures)
             for plane in room_planes:
