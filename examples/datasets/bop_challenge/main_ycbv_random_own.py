@@ -41,7 +41,7 @@ class DataStorer():
 def get_geometry_name():
     return f'h_{h_cone}_theta_{theta_cone}_rmax_{rmax}'
 
-def get_dataset_paths(from_harddive):
+def get_dataset_paths(from_harddive, args):
     if from_harddive:
         media_path = '/media/philipp'
         harddrive_path = [os.path.join(media_path, entry) for entry in os.listdir(media_path)][0]
@@ -52,7 +52,10 @@ def get_dataset_paths(from_harddive):
         geometry_name = get_geometry_name()
         geometry_path = os.path.join(scenes_path, geometry_name)
         blender_name = 'dataset_blender'
-        parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path)]
+        if args.use_poses:
+            parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path) if '_poses_' in entry]
+        else:
+            parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path)]
     return parameter_scenes_paths, geometry_name, blender_name
 
 def load_camera_info():
@@ -128,12 +131,13 @@ parser.add_argument('--num_scenes', type=int, default=2, help="How many scenes w
 parser.add_argument('--ycbv_only', type=bool, default=True, help="Choose if only use ycbv models")
 parser.add_argument('--fx', type=float, default=600, help='Focal length in x direction')
 parser.add_argument('--fy', type=float, default=600, help='Focal length in y direction')
-parser.add_argument('--start_id_fw', type=int, default=1020, help='Start id for scene in forward direction')
-parser.add_argument('--end_id_fw', type=int, default=1600, help='End id for scene in forward direction')
-parser.add_argument('--start_id_bw', type=int, default=1000, help='Start id for scene in backward direction')
-parser.add_argument('--end_id_bw', type=int, default=1600, help='End id for scene in backward direction')
+parser.add_argument('--start_id_fw', type=int, default=0, help='Start id for scene in forward direction')
+parser.add_argument('--end_id_fw', type=int, default=800, help='End id for scene in forward direction')
+parser.add_argument('--start_id_bw', type=int, default=0, help='Start id for scene in backward direction')
+parser.add_argument('--end_id_bw', type=int, default=800, help='End id for scene in backward direction')
 parser.add_argument('--num_min_objs', type=int, default=3, help='Min Number of objects to be thrown into image')
 parser.add_argument('--num_max_objs', type=int, default=8, help='Max Number of objects to be thrown into image')
+parser.add_argument('--use_poses', type=bool, default=True, help='Use all calculated poses without randomization')
 args = parser.parse_args()
 
 bproc.init()
@@ -198,7 +202,7 @@ bproc.renderer.set_max_amount_of_samples(50)
 K = np.array([[args.fx, 0, 320],[0, args.fy, 240],[0, 0, 1]])
 bproc.camera.set_intrinsics_from_K_matrix(K, 640, 480)
 
-all_parameter_scenes_paths, geometry_name, blender_name = get_dataset_paths(from_harddive=True)
+all_parameter_scenes_paths, geometry_name, blender_name = get_dataset_paths(from_harddive=True, args=args)
 # print(f"{bproc.camera.get_intrinsics_as_K_matrix()=}")
 
 target_poses = get_target_pose('target')
@@ -220,7 +224,7 @@ for i in range(args.num_scenes):
     if traj_forwards >= args.end_id_fw and traj_backwards >= args.end_id_bw:
         break
     # Sample bop objects for a scene
-    num_ycbv_objs = np.random.randint(low=1, high=args.num_max_objs, size=1, dtype=int)[0]
+    num_ycbv_objs = np.random.randint(low=args.num_min_objs, high=args.num_max_objs, size=1, dtype=int)[0]
     print(f"{num_ycbv_objs=}")
     sampled_target_bop_objs = list(np.random.choice(target_bop_objs, size=num_ycbv_objs, replace=False))
     sampled_bop = sampled_target_bop_objs
@@ -259,23 +263,32 @@ for i in range(args.num_scenes):
     bop_bvh_tree = bproc.object.create_bvh_tree_multi_objects(sampled_bop)
 
     for parameter_scenes_paths in all_parameter_scenes_paths:
-        if not '_reversed' in parameter_scenes_paths and traj_forwards%100==0 and traj_backwards<traj_forwards:
+        if not '_reversed' in parameter_scenes_paths and (traj_forwards%100==0 and traj_backwards < traj_forwards):
             continue
-        if '_reversed' in parameter_scenes_paths:
-            traj_count = (2*traj_backwards)%200+1
-        else:
-            traj_count = (2*traj_forwards)%200+1
         random_values = np.zeros((0,), dtype=int)
-        for j in range(10):
-            end_val = (j+1)*sp_pt+1
-            choice_size=10
-            if  end_val > traj_count:
-                start_val = j*sp_pt+1
-                if j*sp_pt+1 < traj_count:
-                    start_val = traj_count
-                    choice_size = int((end_val - start_val)/2)    
-                print(f"{j}_{choice_size=}")
-                random_values = np.hstack([random_values, np.random.choice(np.arange(start_val, end_val), size=choice_size, replace=False)])
+        if not args.use_poses:
+            if '_reversed' in parameter_scenes_paths:
+                traj_count = (2*traj_backwards)%200+1
+            else:
+                traj_count = (2*traj_forwards)%200+1
+            for j in range(10):
+                end_val = (j+1)*sp_pt+1
+                choice_size=10
+                if  end_val > traj_count:
+                    start_val = j*sp_pt+1
+                    if j*sp_pt+1 < traj_count:
+                        start_val = traj_count
+                        choice_size = int((end_val - start_val)/2)    
+                    print(f"{j}_{choice_size=}")
+                    random_values = np.hstack([random_values, np.random.choice(np.arange(start_val, end_val), size=choice_size, replace=False)])
+        else:
+            if '_reversed' in parameter_scenes_paths:
+                start_val = traj_backwards + 1
+                end_val = traj_backwards + 51
+            else:
+                start_val = traj_forwards + 1
+                end_val = traj_forwards + 51
+            random_values = np.arange(start_val, end_val)
         for num_traj in list(random_values):
             # Sample two light sources
             light_plane_material.make_emissive(emission_strength=np.random.uniform(3,6), 
