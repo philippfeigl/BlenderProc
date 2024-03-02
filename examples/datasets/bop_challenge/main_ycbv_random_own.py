@@ -290,6 +290,8 @@ for i in range(args.num_scenes):
                 end_val = traj_forwards + 51
             random_values = np.arange(start_val, end_val)
         for num_traj in list(random_values):
+            # Reset key frames
+            bproc.utility.reset_keyframes()
             # Sample two light sources
             light_plane_material.make_emissive(emission_strength=np.random.uniform(3,6), 
                                             emission_color=np.random.uniform([0.5, 0.5, 0.5, 1.0], [1.0, 1.0, 1.0, 1.0]))  
@@ -339,8 +341,10 @@ for i in range(args.num_scenes):
                         poses_array = np.vstack([poses_array, cam2world_opcv])
                         stored_rgb_files.append(os.path.join(chunk_path, f'{j:05d}.png'))
                 # render the whole pipeline
-                
-                data = bproc.renderer.render()
+                try:
+                    data = bproc.renderer.render()
+                except Exception as e:
+                    print(f"Rendering error: {e=}")
                 data_storer = DataStorer(stored_rgb_files, data['colors'], poses_array, blender_scenes_path)
                 idxs = np.arange(1, j+1, 1)
                 data_storer.save_data(idxs=idxs)
