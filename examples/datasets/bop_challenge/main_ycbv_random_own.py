@@ -52,10 +52,13 @@ def get_dataset_paths(from_harddive, args):
         geometry_name = get_geometry_name()
         geometry_path = os.path.join(scenes_path, geometry_name)
         blender_name = 'dataset_blender'
+        print(f"{args.use_poses=}")
         if args.use_poses:
-            parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path) if '_poses_' in entry]
-        else:
-            parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path)]
+            parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path) if '_poses' in entry]
+            print(f"{parameter_scenes_paths=}")
+        elif not args.use_poses:
+            parameter_scenes_paths = [os.path.join(geometry_path, entry) for entry in os.listdir(geometry_path) if not '_poses' in entry]
+            print(f"{parameter_scenes_paths=}")
     return parameter_scenes_paths, geometry_name, blender_name
 
 def load_camera_info():
@@ -127,7 +130,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('bop_parent_path', help="Path to the bop datasets parent directory")
 parser.add_argument('cc_textures_path', default="resources/cctextures", help="Path to downloaded cc textures")
 parser.add_argument('output_dir', help="Path to where the final files will be saved ")
-parser.add_argument('--num_scenes', type=int, default=2, help="How many scenes with 25 images each to generate")
+parser.add_argument('--num_scenes', type=int, default=8, help="How many scenes with 25 images each to generate")
 parser.add_argument('--ycbv_only', type=bool, default=True, help="Choose if only use ycbv models")
 parser.add_argument('--fx', type=float, default=600, help='Focal length in x direction')
 parser.add_argument('--fy', type=float, default=600, help='Focal length in y direction')
@@ -136,12 +139,11 @@ parser.add_argument('--end_id_fw', type=int, default=800, help='End id for scene
 parser.add_argument('--start_id_bw', type=int, default=0, help='Start id for scene in backward direction')
 parser.add_argument('--end_id_bw', type=int, default=800, help='End id for scene in backward direction')
 parser.add_argument('--num_min_objs', type=int, default=3, help='Min Number of objects to be thrown into image')
-parser.add_argument('--num_max_objs', type=int, default=8, help='Max Number of objects to be thrown into image')
-parser.add_argument('--use_poses', type=bool, default=True, help='Use all calculated poses without randomization')
+parser.add_argument('--num_max_objs', type=int, default=10, help='Max Number of objects to be thrown into image')
+parser.add_argument('--use_poses', type=bool, default=False, help='Use all calculated poses without randomization')
 args = parser.parse_args()
 
 bproc.init()
-
 # load bop objects into the scene
 target_bop_objs = bproc.loader.load_bop_objs(bop_dataset_path = os.path.join(args.bop_parent_path, 'ycbv'), mm2m = True)
 
@@ -186,8 +188,8 @@ cc_textures = bproc.loader.load_ccmaterials(args.cc_textures_path)
 
 # Define a function that samples 6-DoF poses
 def sample_pose_func(obj: bproc.types.MeshObject):
-    min = np.random.uniform([tx-0.3, ty-0.3, tz+0.1], [tx-0.2, ty-0.2, tz+0.3])
-    max = np.random.uniform([tx+0.2, ty+0.2, tz+0.4], [tx+0.3, ty+0.3, tz+0.6])
+    min = np.random.uniform([tx-0.3, ty-0.3, tz+0.1], [tx-0.2, ty-0.2, tz+0.15])
+    max = np.random.uniform([tx+0.2, ty+0.2, tz+0.25], [tx+0.3, ty+0.3, tz+0.3])
     obj.set_location(np.random.uniform(min, max))
     obj.set_rotation_euler(bproc.sampler.uniformSO3())
     
@@ -265,18 +267,27 @@ for i in range(args.num_scenes):
     for parameter_scenes_paths in all_parameter_scenes_paths:
         if not '_reversed' in parameter_scenes_paths and (traj_forwards%100==0 and traj_backwards < traj_forwards):
             continue
+        if '_reversed' in parameter_scenes_paths and traj_backwards > traj_forwards:
+            continue
         random_values = np.zeros((0,), dtype=int)
         if not args.use_poses:
             if '_reversed' in parameter_scenes_paths:
-                traj_count = (2*traj_backwards)%200+1
+                traj_class = traj_backwards
+                end_id = args.end_id_bw
             else:
-                traj_count = (2*traj_forwards)%200+1
-            for j in range(10):
+                traj_class = traj_forwards
+                end_id = args.end_id_fw
+            traj_count = (2*traj_class)%200+1
+            for j in range(5):
                 end_val = (j+1)*sp_pt+1
+                if traj_count >= 100:
+                    end_val += 100 
                 choice_size=10
-                if  end_val > traj_count:
+                if  end_val > traj_count :
                     start_val = j*sp_pt+1
-                    if j*sp_pt+1 < traj_count:
+                    if traj_count >= 100:
+                        start_val += 100
+                    if start_val < traj_count:
                         start_val = traj_count
                         choice_size = int((end_val - start_val)/2)    
                     print(f"{j}_{choice_size=}")
@@ -284,10 +295,11 @@ for i in range(args.num_scenes):
         else:
             if '_reversed' in parameter_scenes_paths:
                 start_val = traj_backwards + 1
-                end_val = traj_backwards + 51
+                end_val = traj_backwards + 51 - traj_backwards%50
             else:
                 start_val = traj_forwards + 1
-                end_val = traj_forwards + 51
+                end_val = traj_forwards + 51 - traj_forwards%50
+            print(f"start: {start_val}\nend:{end_val}")
             random_values = np.arange(start_val, end_val)
         for num_traj in list(random_values):
             # Reset key frames
